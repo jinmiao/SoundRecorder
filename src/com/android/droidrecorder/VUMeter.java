@@ -16,10 +16,6 @@
 
 package com.android.droidrecorder;
 
-import java.util.Map;
-
-import com.android.droidrecorder.R;
-
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
