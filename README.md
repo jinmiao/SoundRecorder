@@ -16,6 +16,6 @@ SoundRecorder
     2.Play the selected sound record.
     3.Optimize the UI
     
-    Image > http://www.androideng.com/?portfolio=soundrecorder
+    <a href="http://www.androideng.com/?portfolio=soundrecorder">Screenshot</a>
 
 
