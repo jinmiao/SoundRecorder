@@ -1,193 +1,286 @@
 /*
-* Copyright (C) 2011 The Android Open Source Project
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
+ * Copyright (C) 2011 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package com.android.droidrecorder;
-
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.app.NotificationManager;
-import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
-import android.content.ContentValues;
-import android.content.Context;
-import android.content.DialogInterface;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.res.Configuration;
-import android.content.res.Resources;
-import android.database.Cursor;
-import android.media.AudioManager;
-import android.media.MediaRecorder;
-import android.media.SoundPool;
-import android.net.Uri;
-import android.os.Build;
-import android.os.Bundle;
-import android.os.Environment;
-import android.os.Handler;
-import android.provider.MediaStore;
-import android.text.TextUtils;
-import android.util.Log;
-import android.view.KeyEvent;
-import android.view.Menu;
-import android.view.MenuItem;
-import android.view.View;
-import android.view.ViewGroup.LayoutParams;
-import android.widget.Button;
-import android.widget.ImageButton;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.SeekBar;
-import android.widget.TextView;
-import android.widget.Toast;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.util.HashSet;
 
-import com.coolroy.widget.DirSoundsListActivity;
+import com.android.droidrecorder.R;
 
-public class SoundRecorder extends Activity implements Button.OnClickListener,
-        Recorder.OnStateChangedListener {
-    private static final String TAG = "SoundRecorder";
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Intent;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.content.BroadcastReceiver;
+import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.database.Cursor;
+import android.media.MediaRecorder;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Environment;
+import android.os.Handler;
+import android.os.PowerManager;
+import android.os.StatFs;
+import android.os.PowerManager.WakeLock;
+import android.provider.MediaStore;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.widget.Button;
+import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 
-    private static final String RECORDER_STATE_KEY = "recorder_state";
+/**
+ * Calculates remaining recording time based on available disk space and
+ * optionally a maximum recording file size.
+ * 
+ * The reason why this is not trivial is that the file grows in blocks
+ * every few seconds or so, while we want a smooth countdown.
+ */
 
-    private static final String SAMPLE_INTERRUPTED_KEY = "sample_interrupted";
-
-    private static final String MAX_FILE_SIZE_KEY = "max_file_size";
-
-    private static final String AUDIO_3GPP = "audio/3gpp";
-
-    private static final String AUDIO_AMR = "audio/amr";
-
-    private static final String AUDIO_ANY = "audio/*";
-
-    private static final String ANY_ANY = "*/*";
-
-    private static final String FILE_EXTENSION_AMR = ".amr";
-
-    private static final String FILE_EXTENSION_3GPP = ".3gpp";
-
-    public static final int BITRATE_AMR = 2 * 1024 * 8; // bits/sec
-
-    public static final int BITRATE_3GPP = 20 * 1024 * 8; // bits/sec
-
-    private static final int SEEK_BAR_MAX = 10000;
-
-    private String mRequestedType = AUDIO_ANY;
-
-    private boolean mCanRequestChanged = false;
-
-    private Recorder mRecorder;
-
-    private RecorderReceiver mReceiver;
-
-    private boolean mSampleInterrupted = false;
-
-    private boolean mShowFinishButton = false;
-
-    private String mErrorUiMessage = null; // Some error messages are displayed
-                                           // in the UI, not a dialog. This
-                                           // happens when a recording
-                                           // is interrupted for some reason.
-
-    private long mMaxFileSize = -1; // can be specified in the intent
-
-    private RemainingTimeCalculator mRemainingTimeCalculator;
-
-    private String mTimerFormat;
-
-    private SoundPool mSoundPool;
-
-    private int mPlaySound;
-
-    private int mPauseSound;
-
-    private HashSet<String> mSavedRecord;
-
-    private long mLastClickTime;
-
-    private int mLastButtonId;
-
-    private final Handler mHandler = new Handler();
-
-    private Runnable mUpdateTimer = new Runnable() {
-        public void run() {
-            if (!mStopUiUpdate) {
-                updateTimerView();
-            }
-        }
-    };
+class RemainingTimeCalculator {
+    public static final int UNKNOWN_LIMIT = 0;
+    public static final int FILE_SIZE_LIMIT = 1;
+    public static final int DISK_SPACE_LIMIT = 2;
     
+    // which of the two limits we will hit (or have fit) first
+    private int mCurrentLowerLimit = UNKNOWN_LIMIT;
+    
+    private File mSDCardDirectory;
+    
+     // State for tracking file size of recording.
+    private File mRecordingFile;
+    private long mMaxBytes;
+    
+    // Rate at which the file grows
+    private int mBytesPerSecond;
+    
+    // time at which number of free blocks last changed
+    private long mBlocksChangedTime;
+    // number of available blocks at that time
+    private long mLastBlocks;
+    
+    // time at which the size of the file has last changed
+    private long mFileSizeChangedTime;
+    // size of the file at that time
+    private long mLastFileSize;
+    
+    public RemainingTimeCalculator() {
+        mSDCardDirectory = Environment.getExternalStorageDirectory();
+    }    
+    
+    /**
+     * If called, the calculator will return the minimum of two estimates:
+     * how long until we run out of disk space and how long until the file
+     * reaches the specified size.
+     * 
+     * @param file the file to watch
+     * @param maxBytes the limit
+     */
+    
+    public void setFileSizeLimit(File file, long maxBytes) {
+        mRecordingFile = file;
+        mMaxBytes = maxBytes;
+    }
+    
+    /**
+     * Resets the interpolation.
+     */
+    public void reset() {
+        mCurrentLowerLimit = UNKNOWN_LIMIT;
+        mBlocksChangedTime = -1;
+        mFileSizeChangedTime = -1;
+    }
+    
+    /**
+     * Returns how long (in seconds) we can continue recording. 
+     */
+    public long timeRemaining() {
+        // Calculate how long we can record based on free disk space
+        
+        StatFs fs = new StatFs(mSDCardDirectory.getAbsolutePath());
+        long blocks = fs.getAvailableBlocks();
+        long blockSize = fs.getBlockSize();
+        long now = System.currentTimeMillis();
+        
+        if (mBlocksChangedTime == -1 || blocks != mLastBlocks) {
+            mBlocksChangedTime = now;
+            mLastBlocks = blocks;
+        }
+
+        /* The calculation below always leaves one free block, since free space
+           in the block we're currently writing to is not added. This
+           last block might get nibbled when we close and flush the file, but 
+           we won't run out of disk. */
+        
+        // at mBlocksChangedTime we had this much time
+        long result = mLastBlocks*blockSize/mBytesPerSecond;
+        // so now we have this much time
+        result -= (now - mBlocksChangedTime)/1000;
+        
+        if (mRecordingFile == null) {
+            mCurrentLowerLimit = DISK_SPACE_LIMIT;
+            return result;
+        }
+        
+        // If we have a recording file set, we calculate a second estimate
+        // based on how long it will take us to reach mMaxBytes.
+        
+        mRecordingFile = new File(mRecordingFile.getAbsolutePath());
+        long fileSize = mRecordingFile.length();
+        if (mFileSizeChangedTime == -1 || fileSize != mLastFileSize) {
+            mFileSizeChangedTime = now;
+            mLastFileSize = fileSize;
+        }
+
+        long result2 = (mMaxBytes - fileSize)/mBytesPerSecond;
+        result2 -= (now - mFileSizeChangedTime)/1000;
+        result2 -= 1; // just for safety
+        
+        mCurrentLowerLimit = result < result2
+            ? DISK_SPACE_LIMIT : FILE_SIZE_LIMIT;
+        
+        return Math.min(result, result2);
+    }
+    
+    /**
+     * Indicates which limit we will hit (or have hit) first, by returning one 
+     * of FILE_SIZE_LIMIT or DISK_SPACE_LIMIT or UNKNOWN_LIMIT. We need this to 
+     * display the correct message to the user when we hit one of the limits.
+     */
+    public int currentLowerLimit() {
+        return mCurrentLowerLimit;
+    }
+
+    /**
+     * Is there any point of trying to start recording?
+     */
+    public boolean diskSpaceAvailable() {
+        StatFs fs = new StatFs(mSDCardDirectory.getAbsolutePath());
+        // keep one free block
+        return fs.getAvailableBlocks() > 1;
+    }
+
+    /**
+     * Sets the bit rate used in the interpolation.
+     *
+     * @param bitRate the bit rate to set in bits/sec.
+     */
+    public void setBitRate(int bitRate) {
+        mBytesPerSecond = bitRate/8;
+    }
+}
+
+public class SoundRecorder extends Activity 
+        implements Button.OnClickListener, Recorder.OnStateChangedListener {
+    static final String TAG = "SoundRecorder";
+    static final String STATE_FILE_NAME = "soundrecorder.state";
+    static final String RECORDER_STATE_KEY = "recorder_state";
+    static final String SAMPLE_INTERRUPTED_KEY = "sample_interrupted";
+    static final String MAX_FILE_SIZE_KEY = "max_file_size";
+
+    static final String AUDIO_3GPP = "audio/3gpp";
+    static final String AUDIO_AMR = "audio/amr";
+    static final String AUDIO_ANY = "audio/*";
+    static final String ANY_ANY = "*/*";
+    
+    static final int BITRATE_AMR =  5900; // bits/sec
+    static final int BITRATE_3GPP = 5900;
+    
+    WakeLock mWakeLock;
+    String mRequestedType = AUDIO_ANY;
+    Recorder mRecorder;
+    boolean mSampleInterrupted = false;    
+    String mErrorUiMessage = null; // Some error messages are displayed in the UI, 
+                                   // not a dialog. This happens when a recording
+                                   // is interrupted for some reason.
+    
+    long mMaxFileSize = -1;        // can be specified in the intent
+    RemainingTimeCalculator mRemainingTimeCalculator;
+    
+    String mTimerFormat;
+    final Handler mHandler = new Handler();
+    Runnable mUpdateTimer = new Runnable() {
+        public void run() { updateTimerView(); }
+    };
+
+    ImageButton mRecordButton;
+    ImageButton mPlayButton;
+    ImageButton mStopButton;
+    
+    ImageView mStateLED;
+    TextView mStateMessage1;
+    TextView mStateMessage2;
+    ProgressBar mStateProgressBar;
+    TextView mTimerView;
+    
+    LinearLayout mExitButtons;
+    Button mAcceptButton;
+    Button mDiscardButton;
     VUMeter mVUMeter;
-    
-    private Runnable mUpdateSeekBar = new Runnable() {
-        @Override
-        public void run() {
-            if (!mStopUiUpdate) {
-                updateSeekBar();
-            }
-        }
-    };
-
-    private ImageButton mNewButton;
-
-    private ImageButton mFinishButton;
-
-    private ImageButton mRecordButton;
-
-    private ImageButton mStopButton;
-
-    private ImageButton mPlayButton;
-
-    private ImageButton mPauseButton;
-
-    private ImageButton mDeleteButton;
-
-//    private RecordNameEditText mFileNameEditText;
-
-    private LinearLayout mTimerLayout;
-
-    private LinearLayout mSeekBarLayout;
-
-    private TextView mStartTime;
-
-    private TextView mTotalTime;
-
-    private SeekBar mPlaySeekBar;
-
     private BroadcastReceiver mSDCardMountEventReceiver = null;
-
-    private boolean mStopUiUpdate;
 
     @Override
     public void onCreate(Bundle icycle) {
         super.onCreate(icycle);
-        initInternalState(getIntent());
-        setContentView(R.layout.main_layout);
 
-        mRecorder = new Recorder(this);
+        Intent i = getIntent();
+        if (i != null) {
+            String s = i.getType();
+            if (AUDIO_AMR.equals(s) || AUDIO_3GPP.equals(s) || AUDIO_ANY.equals(s)
+                    || ANY_ANY.equals(s)) {
+                mRequestedType = s;
+            } else if (s != null) {
+                // we only support amr and 3gpp formats right now 
+                setResult(RESULT_CANCELED);
+                finish();
+                return;
+            }
+            
+            final String EXTRA_MAX_BYTES
+                = android.provider.MediaStore.Audio.Media.EXTRA_MAX_BYTES;
+            mMaxFileSize = i.getLongExtra(EXTRA_MAX_BYTES, -1);
+        }
+        
+        if (AUDIO_ANY.equals(mRequestedType) || ANY_ANY.equals(mRequestedType)) {
+            mRequestedType = AUDIO_3GPP;
+        }
+        
+        setContentView(R.layout.main);
+
+        mRecorder = new Recorder();
         mRecorder.setOnStateChangedListener(this);
-        mReceiver = new RecorderReceiver();
         mRemainingTimeCalculator = new RemainingTimeCalculator();
-        mSavedRecord = new HashSet<String>();
+
+        PowerManager pm 
+            = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        mWakeLock = pm.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, 
+                                    "SoundRecorder");
 
         initResourceRefs();
-
+        
         setResult(RESULT_CANCELED);
         registerExternalStorageListener();
         if (icycle != null) {
@@ -198,164 +291,69 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
                 mMaxFileSize = recorderState.getLong(MAX_FILE_SIZE_KEY, -1);
             }
         }
-
-        setVolumeControlStream(AudioManager.STREAM_MUSIC);
-
-        if (mShowFinishButton) {
-            // reset state if it is a recording request
-            mRecorder.reset();
-//            resetFileNameEditText();
-        }
+        
+        updateUi();
     }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-
-        boolean preShowFinishButton = mShowFinishButton;
-        initInternalState(intent);
-
-        if (mShowFinishButton || preShowFinishButton != mShowFinishButton) {
-            // reset state if it is a recording request or state is changed
-            mRecorder.reset();
-//            resetFileNameEditText();
-        }
-    }
-
-    private void initInternalState(Intent i) {
-        mRequestedType = AUDIO_ANY;
-        mShowFinishButton = false;
-        if (i != null) {
-            String s = i.getType();
-            if (AUDIO_AMR.equals(s) || AUDIO_3GPP.equals(s) || AUDIO_ANY.equals(s)
-                    || ANY_ANY.equals(s)) {
-                mRequestedType = s;
-                mShowFinishButton = true;
-            } else if (s != null) {
-                // we only support amr and 3gpp formats right now
-                setResult(RESULT_CANCELED);
-                finish();
-                return;
-            }
-
-            final String EXTRA_MAX_BYTES = android.provider.MediaStore.Audio.Media.EXTRA_MAX_BYTES;
-            mMaxFileSize = i.getLongExtra(EXTRA_MAX_BYTES, -1);
-        }
-
-        if (AUDIO_ANY.equals(mRequestedType)) {
-            mRequestedType = SoundRecorderPreferenceActivity.getRecordType(this);
-        } else if (ANY_ANY.equals(mRequestedType)) {
-            mRequestedType = AUDIO_3GPP;
-        }
-    }
-
+    
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
 
-        setContentView(R.layout.main_layout);
+        setContentView(R.layout.main);
         initResourceRefs();
-        updateUi(false);
+        updateUi();
     }
-
+    
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
-
+        
         if (mRecorder.sampleLength() == 0)
             return;
 
         Bundle recorderState = new Bundle();
-
-        if (mRecorder.state() != Recorder.RECORDING_STATE) {
-            mRecorder.saveState(recorderState);
-        }
+        
+        mRecorder.saveState(recorderState);
         recorderState.putBoolean(SAMPLE_INTERRUPTED_KEY, mSampleInterrupted);
         recorderState.putLong(MAX_FILE_SIZE_KEY, mMaxFileSize);
-
+        
         outState.putBundle(RECORDER_STATE_KEY, recorderState);
     }
-
+    
     /*
      * Whenever the UI is re-created (due f.ex. to orientation change) we have
      * to reinitialize references to the views.
      */
     private void initResourceRefs() {
-        mNewButton = (ImageButton) findViewById(R.id.newButton);
-        mFinishButton = (ImageButton) findViewById(R.id.finishButton);
         mRecordButton = (ImageButton) findViewById(R.id.recordButton);
-        mStopButton = (ImageButton) findViewById(R.id.stopButton);
         mPlayButton = (ImageButton) findViewById(R.id.playButton);
-        mPauseButton = (ImageButton) findViewById(R.id.pauseButton);
-        mDeleteButton = (ImageButton) findViewById(R.id.deleteButton);
+        mStopButton = (ImageButton) findViewById(R.id.stopButton);
         
-        mNewButton.setOnClickListener(this);
-        mFinishButton.setOnClickListener(this);
-        mRecordButton.setOnClickListener(this);
-        mStopButton.setOnClickListener(this);
-        mPlayButton.setOnClickListener(this);
-        mPauseButton.setOnClickListener(this);
-        mDeleteButton.setOnClickListener(this);
+        mStateLED = (ImageView) findViewById(R.id.stateLED);
+        mStateMessage1 = (TextView) findViewById(R.id.stateMessage1);
+        mStateMessage2 = (TextView) findViewById(R.id.stateMessage2);
+        mStateProgressBar = (ProgressBar) findViewById(R.id.stateProgressBar);
+        mTimerView = (TextView) findViewById(R.id.timerView);
         
+        mExitButtons = (LinearLayout) findViewById(R.id.exitButtons);
+        mAcceptButton = (Button) findViewById(R.id.acceptButton);
+        mDiscardButton = (Button) findViewById(R.id.discardButton);
         mVUMeter = (VUMeter) findViewById(R.id.uvMeter);
-        mVUMeter.setRecorder(mRecorder);
-//        mFileNameEditText = (RecordNameEditText) findViewById(R.id.file_name);
-
-//        resetFileNameEditText();
-//        mFileNameEditText.setNameChangeListener(new RecordNameEditText.OnNameChangeListener() {
-//            @Override
-//            public void onNameChanged(String name) {
-//                if (!TextUtils.isEmpty(name)) {
-//                    mRecorder.renameSampleFile(name);
-//                }
-//            }
-//        });
-
-        mTimerLayout = (LinearLayout) findViewById(R.id.time_calculator);
-       
-        mSeekBarLayout = (LinearLayout) findViewById(R.id.play_seek_bar_layout);
-        mStartTime = (TextView) findViewById(R.id.starttime);
-        mTotalTime = (TextView) findViewById(R.id.totaltime);
-        mPlaySeekBar = (SeekBar) findViewById(R.id.play_seek_bar);
-        mPlaySeekBar.setMax(SEEK_BAR_MAX);
-        mPlaySeekBar.setOnSeekBarChangeListener(mSeekBarChangeListener);
+        
+        mRecordButton.setOnClickListener(this);
+        mPlayButton.setOnClickListener(this);
+        mStopButton.setOnClickListener(this);
+        mAcceptButton.setOnClickListener(this);
+        mDiscardButton.setOnClickListener(this);
 
         mTimerFormat = getResources().getString(R.string.timer_format);
-
-        if (mShowFinishButton) {
-            mNewButton.setVisibility(View.GONE);
-            mFinishButton.setVisibility(View.VISIBLE);
-            mNewButton = mFinishButton; // use mNewButon variable for left
-            // button in the control panel
-        }
-
-        mSoundPool = new SoundPool(5, AudioManager.STREAM_SYSTEM, 5);
-        mPlaySound = mSoundPool.load("/system/media/audio/ui/SoundRecorderPlay.ogg", 1);
-        mPauseSound = mSoundPool.load("/system/media/audio/ui/SoundRecorderPause.ogg", 1);
-
-        mLastClickTime = 0;
-        mLastButtonId = 0;
         
-        mVUMeter = (VUMeter) findViewById(R.id.uvMeter);
         mVUMeter.setRecorder(mRecorder);
     }
-
-//    private void resetFileNameEditText() {
-//        String extension = "";
-//        if (AUDIO_AMR.equals(mRequestedType)) {
-//            extension = FILE_EXTENSION_AMR;
-//        } else if (AUDIO_3GPP.equals(mRequestedType)) {
-//            extension = FILE_EXTENSION_3GPP;
-//        }
-//
-//        // for audio which is used for mms, we can only use english file name
-//        // mShowFinishButon indicates whether this is an audio for mms
-//        mFileNameEditText.initFileName(mRecorder.getRecordDir(), extension, mShowFinishButton);
-//    }
-
+    
     /*
-     * Make sure we're not recording music playing in the background, ask the
-     * MediaPlaybackService to pause playback.
+     * Make sure we're not recording music playing in the background, ask
+     * the MediaPlaybackService to pause playback.
      */
     private void stopAudioPlayback() {
         // Shamelessly copied from MediaPlaybackService.java, which
@@ -370,112 +368,66 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
      * Handle the buttons.
      */
     public void onClick(View button) {
-        if (System.currentTimeMillis() - mLastClickTime < 300) {
-            // in order to avoid user click bottom too quickly
-            return;
-        }
-
         if (!button.isEnabled())
             return;
 
-        if (button.getId() == mLastButtonId && button.getId() != R.id.newButton) {
-            // as the recorder state is async with the UI
-            // we need to avoid launching the duplicated action
-            return;
-        }
-
-        if (button.getId() == R.id.stopButton && System.currentTimeMillis() - mLastClickTime < 1500) {
-            // it seems that the media recorder is not robust enough
-            // sometime it crashes when stop recording right after starting
-            return;
-        }
-
-        mLastClickTime = System.currentTimeMillis();
-        mLastButtonId = button.getId();
-
         switch (button.getId()) {
-            case R.id.newButton:
-//                mFileNameEditText.clearFocus();
-                saveSample();
-                mRecorder.reset();
-//                resetFileNameEditText();
-                break;
             case R.id.recordButton:
-//                showOverwriteConfirmDialogIfConflicts();
-            	startRecording();//
+                mRemainingTimeCalculator.reset();
+                if (!Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
+                    mSampleInterrupted = true;
+                    mErrorUiMessage = getResources().getString(R.string.insert_sd_card);
+                    updateUi();
+                } else if (!mRemainingTimeCalculator.diskSpaceAvailable()) {
+                    mSampleInterrupted = true;
+                    mErrorUiMessage = getResources().getString(R.string.storage_is_full);
+                    updateUi();
+                } else {
+                    stopAudioPlayback();
+
+                    if (AUDIO_AMR.equals(mRequestedType)) {
+                        mRemainingTimeCalculator.setBitRate(BITRATE_AMR);
+                        mRecorder.startRecording(MediaRecorder.OutputFormat.AMR_NB, ".amr", this);
+                    } else if (AUDIO_3GPP.equals(mRequestedType)) {
+                        mRemainingTimeCalculator.setBitRate(BITRATE_3GPP);
+                        mRecorder.startRecording(MediaRecorder.OutputFormat.THREE_GPP, ".3gpp",
+                                this);
+                    } else {
+                        throw new IllegalArgumentException("Invalid output file type requested");
+                    }
+                    
+                    if (mMaxFileSize != -1) {
+                        mRemainingTimeCalculator.setFileSizeLimit(
+                                mRecorder.sampleFile(), mMaxFileSize);
+                    }
+                }
+                break;
+            case R.id.playButton:
+                mRecorder.startPlayback();
                 break;
             case R.id.stopButton:
                 mRecorder.stop();
                 break;
-            case R.id.playButton:
-                mRecorder.startPlayback(mRecorder.playProgress());
-                break;
-            case R.id.pauseButton:
-                mRecorder.pausePlayback();
-                break;
-            case R.id.finishButton:
+            case R.id.acceptButton:
                 mRecorder.stop();
                 saveSample();
                 finish();
                 break;
-            case R.id.deleteButton:
-                showDeleteConfirmDialog();
+            case R.id.discardButton:
+                mRecorder.delete();
+                finish();
                 break;
         }
     }
-
-    private void startRecording() {
-        mRemainingTimeCalculator.reset();
-        if (!Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
-            mSampleInterrupted = true;
-            mErrorUiMessage = getResources().getString(R.string.insert_sd_card);
-            updateUi(false);
-        } else if (!mRemainingTimeCalculator.diskSpaceAvailable()) {
-            mSampleInterrupted = true;
-            mErrorUiMessage = getResources().getString(R.string.storage_is_full);
-            updateUi(false);
-        } else {
-            stopAudioPlayback();
-
-            boolean isHighQuality = SoundRecorderPreferenceActivity.isHighQuality(this);
-            if (AUDIO_AMR.equals(mRequestedType)) {
-                mRemainingTimeCalculator.setBitRate(BITRATE_AMR);
-                int outputfileformat = isHighQuality ? MediaRecorder.OutputFormat.AMR_WB
-                        : MediaRecorder.OutputFormat.AMR_NB;
-//                mRecorder.startRecording(outputfileformat, mFileNameEditText.getText().toString(),
-//                        FILE_EXTENSION_AMR, isHighQuality, mMaxFileSize);
-                mRecorder.startRecording(outputfileformat, "",
-                        FILE_EXTENSION_AMR, isHighQuality, mMaxFileSize);
-            } else if (AUDIO_3GPP.equals(mRequestedType)) {
-                // HACKME: for HD2, there is an issue with high quality 3gpp
-                // use low quality instead
-                if (Build.MODEL.equals("HTC HD2")) {
-                    isHighQuality = false;
-                }
-
-                mRemainingTimeCalculator.setBitRate(BITRATE_3GPP);
-//                mRecorder.startRecording(MediaRecorder.OutputFormat.THREE_GPP, mFileNameEditText
-//                        .getText().toString(), FILE_EXTENSION_3GPP, isHighQuality, mMaxFileSize);
-                mRecorder.startRecording(MediaRecorder.OutputFormat.THREE_GPP, "", FILE_EXTENSION_3GPP, isHighQuality, mMaxFileSize);
-            } else {
-                throw new IllegalArgumentException("Invalid output file type requested");
-            }
-
-            if (mMaxFileSize != -1) {
-                mRemainingTimeCalculator.setFileSizeLimit(mRecorder.sampleFile(), mMaxFileSize);
-            }
-        }
-    }
-
+    
     /*
-     * Handle the "back" hardware key.
+     * Handle the "back" hardware key. 
      */
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             switch (mRecorder.state()) {
                 case Recorder.IDLE_STATE:
-                case Recorder.PLAYING_PAUSED_STATE:
                     if (mRecorder.sampleLength() > 0)
                         saveSample();
                     finish();
@@ -485,11 +437,7 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
                     saveSample();
                     break;
                 case Recorder.RECORDING_STATE:
-                    if (mShowFinishButton) {
-                        mRecorder.clear();
-                    } else {
-                        finish();
-                    }
+                    mRecorder.clear();
                     break;
             }
             return true;
@@ -499,175 +447,38 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
-        String type = SoundRecorderPreferenceActivity.getRecordType(this);
-        if (mCanRequestChanged && !TextUtils.equals(type, mRequestedType)) {
-            saveSample();
-            mRecorder.reset();
-            mRequestedType = type;
-//            resetFileNameEditText();
-        }
-        mCanRequestChanged = false;
-
-        if (!mRecorder.syncStateWithService()) {
-            mRecorder.reset();
-//            resetFileNameEditText();
-        }
-
-        if (mRecorder.state() == Recorder.RECORDING_STATE) {
-            String preExtension = AUDIO_AMR.equals(mRequestedType) ? FILE_EXTENSION_AMR
-                    : FILE_EXTENSION_3GPP;
-            if (!mRecorder.sampleFile().getName().endsWith(preExtension)) {
-                // the extension is changed need to stop current recording
-                mRecorder.reset();
-//                resetFileNameEditText();
-            } else {
-                // restore state
-//                if (!mShowFinishButton) {
-//                    String fileName = mRecorder.sampleFile().getName().replace(preExtension, "");
-//                    mFileNameEditText.setText(fileName);
-//                }
-
-                if (AUDIO_AMR.equals(mRequestedType)) {
-                    mRemainingTimeCalculator.setBitRate(BITRATE_AMR);
-                } else if (AUDIO_3GPP.equals(mRequestedType)) {
-                    mRemainingTimeCalculator.setBitRate(BITRATE_3GPP);
-                }
-            }
-        } else {
-            File file = mRecorder.sampleFile();
-            if (file != null && !file.exists()) {
-                mRecorder.reset();
-//                resetFileNameEditText();
-            }
-        }
-
-        IntentFilter filter = new IntentFilter();
-        filter.addAction(RecorderService.RECORDER_SERVICE_BROADCAST_NAME);
-        registerReceiver(mReceiver, filter);
-
-        mStopUiUpdate = false;
-        updateUi(true);
-
-        if (RecorderService.isRecording()) {
-            Intent intent = new Intent(this, RecorderService.class);
-            intent.putExtra(RecorderService.ACTION_NAME,
-                    RecorderService.ACTION_DISABLE_MONITOR_REMAIN_TIME);
-            startService(intent);
-        }
+    public void onStop() {
+        mRecorder.stop();
+        super.onStop();
     }
 
     @Override
     protected void onPause() {
-        if (mRecorder.state() != Recorder.RECORDING_STATE || mShowFinishButton
-                || mMaxFileSize != -1) {
-            mRecorder.stop();
-            saveSample();
-//            mFileNameEditText.clearFocus();
-            ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE))
-                    .cancel(RecorderService.NOTIFICATION_ID);
-        }
-
-        if (mReceiver != null) {
-            unregisterReceiver(mReceiver);
-        }
-
-        mCanRequestChanged = true;
-        mStopUiUpdate = true;
-
-        if (RecorderService.isRecording()) {
-            Intent intent = new Intent(this, RecorderService.class);
-            intent.putExtra(RecorderService.ACTION_NAME,
-                    RecorderService.ACTION_ENABLE_MONITOR_REMAIN_TIME);
-            startService(intent);
-        }
-
+        mSampleInterrupted = mRecorder.state() == Recorder.RECORDING_STATE;
+        mRecorder.stop();
+        
         super.onPause();
     }
 
-    @Override
-    protected void onStop() {
-        if (mShowFinishButton) {
-            finish();
-        }
-        super.onStop();
-    }
-
     /*
-     * If we have just recorded a sample, this adds it to the media data base
+     * If we have just recorded a smaple, this adds it to the media data base
      * and sets the result to the sample's URI.
      */
     private void saveSample() {
         if (mRecorder.sampleLength() == 0)
             return;
-        if (!mSavedRecord.contains(mRecorder.sampleFile().getAbsolutePath())) {
-            Uri uri = null;
-            try {
-                uri = this.addToMediaDB(mRecorder.sampleFile());
-            } catch (UnsupportedOperationException ex) { // Database
-                // manipulation
-                // failure
-                return;
-            }
-            if (uri == null) {
-                return;
-            }
-            mSavedRecord.add(mRecorder.sampleFile().getAbsolutePath());
-            setResult(RESULT_OK, new Intent().setData(uri));
+        Uri uri = null;
+        try {
+            uri = this.addToMediaDB(mRecorder.sampleFile());
+        } catch(UnsupportedOperationException ex) {  // Database manipulation failure
+            return;
         }
+        if (uri == null) {
+            return;
+        }
+        setResult(RESULT_OK, new Intent().setData(uri));
     }
-
-    private void showDeleteConfirmDialog() {
-        AlertDialog.Builder dialogBuilder = new AlertDialog.Builder(this);
-        dialogBuilder.setIcon(android.R.drawable.ic_dialog_alert);
-        dialogBuilder.setTitle(R.string.delete_dialog_title);
-        dialogBuilder.setPositiveButton(android.R.string.ok, new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                mRecorder.delete();
-            }
-        });
-        dialogBuilder.setNegativeButton(android.R.string.cancel,
-                new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        mLastButtonId = 0;
-                    }
-                });
-        dialogBuilder.show();
-    }
-//
-//    private void showOverwriteConfirmDialogIfConflicts() {
-//        String fileName = mFileNameEditText.getText().toString()
-//                + (AUDIO_AMR.equals(mRequestedType) ? FILE_EXTENSION_AMR : FILE_EXTENSION_3GPP);
-//
-//        if (mRecorder.isRecordExisted(fileName) && !mShowFinishButton) {
-//            // file already existed and it's not a recording request from other
-//            // app
-//            AlertDialog.Builder dialogBuilder = new AlertDialog.Builder(this);
-//            dialogBuilder.setIcon(android.R.drawable.ic_dialog_alert);
-//            dialogBuilder.setTitle(getString(R.string.overwrite_dialog_title, fileName));
-//            dialogBuilder.setPositiveButton(android.R.string.ok,
-//                    new DialogInterface.OnClickListener() {
-//                        @Override
-//                        public void onClick(DialogInterface dialog, int which) {
-//                            startRecording();
-//                        }
-//                    });
-//            dialogBuilder.setNegativeButton(android.R.string.cancel,
-//                    new DialogInterface.OnClickListener() {
-//                        @Override
-//                        public void onClick(DialogInterface dialog, int which) {
-//                            mLastButtonId = 0;
-//                        }
-//                    });
-//            dialogBuilder.show();
-//        } else {
-//            startRecording();
-//        }
-//    }
-
+    
     /*
      * Called on destroy to unregister the SD card mount event receiver.
      */
@@ -677,14 +488,11 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
             unregisterReceiver(mSDCardMountEventReceiver);
             mSDCardMountEventReceiver = null;
         }
-        mSoundPool.release();
-
         super.onDestroy();
     }
-
+    
     /*
-     * Registers an intent to listen for
-     * ACTION_MEDIA_EJECT/ACTION_MEDIA_UNMOUNTED/ACTION_MEDIA_MOUNTED
+     * Registers an intent to listen for ACTION_MEDIA_EJECT/ACTION_MEDIA_MOUNTED
      * notifications.
      */
     private void registerExternalStorageListener() {
@@ -692,15 +500,17 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
             mSDCardMountEventReceiver = new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    mSampleInterrupted = false;
-                    mRecorder.reset();
-//                    resetFileNameEditText();
-                    updateUi(false);
+                    String action = intent.getAction();
+                    if (action.equals(Intent.ACTION_MEDIA_EJECT)) {
+                        mRecorder.delete();
+                    } else if (action.equals(Intent.ACTION_MEDIA_MOUNTED)) {
+                        mSampleInterrupted = false;
+                        updateUi();
+                    }
                 }
             };
             IntentFilter iFilter = new IntentFilter();
             iFilter.addAction(Intent.ACTION_MEDIA_EJECT);
-            iFilter.addAction(Intent.ACTION_MEDIA_UNMOUNTED);
             iFilter.addAction(Intent.ACTION_MEDIA_MOUNTED);
             iFilter.addDataScheme("file");
             registerReceiver(mSDCardMountEventReceiver, iFilter);
@@ -710,26 +520,25 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
     /*
      * A simple utility to do a query into the databases.
      */
-    private Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
-            String sortOrder) {
+    private Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs, String sortOrder) {
         try {
             ContentResolver resolver = getContentResolver();
             if (resolver == null) {
                 return null;
             }
             return resolver.query(uri, projection, selection, selectionArgs, sortOrder);
-        } catch (UnsupportedOperationException ex) {
+         } catch (UnsupportedOperationException ex) {
             return null;
         }
     }
-
+    
     /*
-     * Add the given audioId to the playlist with the given playlistId; and
-     * maintain the play_order in the playlist.
+     * Add the given audioId to the playlist with the given playlistId; and maintain the
+     * play_order in the playlist.
      */
     private void addToPlaylist(ContentResolver resolver, int audioId, long playlistId) {
         String[] cols = new String[] {
-            "count(*)"
+                "count(*)"
         };
         Uri uri = MediaStore.Audio.Playlists.Members.getContentUri("external", playlistId);
         Cursor cur = resolver.query(uri, cols, null, null, null);
@@ -741,19 +550,15 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
         values.put(MediaStore.Audio.Playlists.Members.AUDIO_ID, audioId);
         resolver.insert(uri, values);
     }
-
+    
     /*
      * Obtain the id for the default play list from the audio_playlists table.
      */
     private int getPlaylistId(Resources res) {
         Uri uri = MediaStore.Audio.Playlists.getContentUri("external");
-        final String[] ids = new String[] {
-            MediaStore.Audio.Playlists._ID
-        };
+        final String[] ids = new String[] { MediaStore.Audio.Playlists._ID };
         final String where = MediaStore.Audio.Playlists.NAME + "=?";
-        final String[] args = new String[] {
-            res.getString(R.string.audio_db_playlist_name)
-        };
+        final String[] args = new String[] { res.getString(R.string.audio_db_playlist_name) };
         Cursor cursor = query(uri, ids, where, args, null);
         if (cursor == null) {
             Log.v(TAG, "query returns null");
@@ -764,23 +569,25 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
             if (!cursor.isAfterLast()) {
                 id = cursor.getInt(0);
             }
-            cursor.close();
         }
+        cursor.close();
         return id;
     }
-
+    
     /*
-     * Create a playlist with the given default playlist name, if no such
-     * playlist exists.
+     * Create a playlist with the given default playlist name, if no such playlist exists.
      */
     private Uri createPlaylist(Resources res, ContentResolver resolver) {
         ContentValues cv = new ContentValues();
         cv.put(MediaStore.Audio.Playlists.NAME, res.getString(R.string.audio_db_playlist_name));
         Uri uri = resolver.insert(MediaStore.Audio.Playlists.getContentUri("external"), cv);
         if (uri == null) {
-            new AlertDialog.Builder(this).setTitle(R.string.app_name)
-                    .setMessage(R.string.error_mediadb_new_record)
-                    .setPositiveButton(R.string.button_ok, null).setCancelable(false).show();
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.app_name)
+                .setMessage(R.string.error_mediadb_new_record)
+                .setPositiveButton(R.string.button_ok, null)
+                .setCancelable(false)
+                .show();
         }
         return uri;
     }
@@ -809,73 +616,34 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
         cv.put(MediaStore.Audio.Media.DATE_MODIFIED, (int) (modDate / 1000));
         cv.put(MediaStore.Audio.Media.DURATION, sampleLengthMillis);
         cv.put(MediaStore.Audio.Media.MIME_TYPE, mRequestedType);
-        cv.put(MediaStore.Audio.Media.ARTIST, res.getString(R.string.audio_db_artist_name));
-        cv.put(MediaStore.Audio.Media.ALBUM, res.getString(R.string.audio_db_album_name));
+        cv.put(MediaStore.Audio.Media.ARTIST,
+                res.getString(R.string.audio_db_artist_name));
+        cv.put(MediaStore.Audio.Media.ALBUM,
+                res.getString(R.string.audio_db_album_name));
         Log.d(TAG, "Inserting audio record: " + cv.toString());
         ContentResolver resolver = getContentResolver();
         Uri base = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
         Log.d(TAG, "ContentURI: " + base);
         Uri result = resolver.insert(base, cv);
         if (result == null) {
-            Log.w(TAG, getString(R.string.error_mediadb_new_record));
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.app_name)
+                .setMessage(R.string.error_mediadb_new_record)
+                .setPositiveButton(R.string.button_ok, null)
+                .setCancelable(false)
+                .show();
             return null;
         }
-
         if (getPlaylistId(res) == -1) {
             createPlaylist(res, resolver);
         }
         int audioId = Integer.valueOf(result.getLastPathSegment());
         addToPlaylist(resolver, audioId, getPlaylistId(res));
 
-        // Notify those applications such as Music listening to the
-        // scanner events that a recorded audio file just created.
+        // Notify those applications such as Music listening to the 
+        // scanner events that a recorded audio file just created. 
         sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, result));
         return result;
-    }
-
-    private ImageView getTimerImage(char number) {
-        ImageView image = new ImageView(this);
-        LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-        if (number != ':') {
-            image.setBackgroundResource(R.drawable.background_number);
-        }
-        switch (number) {
-            case '0':
-                image.setImageResource(R.drawable.number_0);
-                break;
-            case '1':
-                image.setImageResource(R.drawable.number_1);
-                break;
-            case '2':
-                image.setImageResource(R.drawable.number_2);
-                break;
-            case '3':
-                image.setImageResource(R.drawable.number_3);
-                break;
-            case '4':
-                image.setImageResource(R.drawable.number_4);
-                break;
-            case '5':
-                image.setImageResource(R.drawable.number_5);
-                break;
-            case '6':
-                image.setImageResource(R.drawable.number_6);
-                break;
-            case '7':
-                image.setImageResource(R.drawable.number_7);
-                break;
-            case '8':
-                image.setImageResource(R.drawable.number_8);
-                break;
-            case '9':
-                image.setImageResource(R.drawable.number_9);
-                break;
-            case ':':
-                image.setImageResource(R.drawable.colon);
-                break;
-        }
-        image.setLayoutParams(lp);
-        return image;
     }
 
     /**
@@ -883,179 +651,174 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
      * progress bar.
      */
     private void updateTimerView() {
+        Resources res = getResources();
         int state = mRecorder.state();
-
+        
         boolean ongoing = state == Recorder.RECORDING_STATE || state == Recorder.PLAYING_STATE;
-
-        long time = mRecorder.progress();
-        String timeStr = String.format(mTimerFormat, time / 60, time % 60);
-        mTimerLayout.removeAllViews();
-        for (int i = 0; i < timeStr.length(); i++) {
-            mTimerLayout.addView(getTimerImage(timeStr.charAt(i)));
-        }
-
-        if (state == Recorder.RECORDING_STATE) {
+        
+        long time = ongoing ? mRecorder.progress() : mRecorder.sampleLength();
+        String timeStr = String.format(mTimerFormat, time/60, time%60);
+        mTimerView.setText(timeStr);
+        
+        if (state == Recorder.PLAYING_STATE) {
+            mStateProgressBar.setProgress((int)(100*time/mRecorder.sampleLength()));
+        } else if (state == Recorder.RECORDING_STATE) {
             updateTimeRemaining();
         }
-
-        if (ongoing) {
-            mHandler.postDelayed(mUpdateTimer, 500);
-        }
-    }
-
-    private void setTimerView(float progress) {
-        long time = (long) (progress * mRecorder.sampleLength());
-        String timeStr = String.format(mTimerFormat, time / 60, time % 60);
-        mTimerLayout.removeAllViews();
-        for (int i = 0; i < timeStr.length(); i++) {
-            mTimerLayout.addView(getTimerImage(timeStr.charAt(i)));
-        }
-    }
-
-    private void updateSeekBar() {
-        if (mRecorder.state() == Recorder.PLAYING_STATE) {
-            mPlaySeekBar.setProgress((int) (SEEK_BAR_MAX * mRecorder.playProgress()));
-            mHandler.postDelayed(mUpdateSeekBar, 10);
-        }
+                
+        if (ongoing)
+            mHandler.postDelayed(mUpdateTimer, 1000);
     }
 
     /*
-     * Called when we're in recording state. Find out how much longer we can go
-     * on recording. If it's under 5 minutes, we display a count-down in the UI.
-     * If we've run out of time, stop the recording.
+     * Called when we're in recording state. Find out how much longer we can 
+     * go on recording. If it's under 5 minutes, we display a count-down in 
+     * the UI. If we've run out of time, stop the recording. 
      */
     private void updateTimeRemaining() {
         long t = mRemainingTimeCalculator.timeRemaining();
-
+            
         if (t <= 0) {
             mSampleInterrupted = true;
 
             int limit = mRemainingTimeCalculator.currentLowerLimit();
             switch (limit) {
                 case RemainingTimeCalculator.DISK_SPACE_LIMIT:
-                    mErrorUiMessage = getResources().getString(R.string.storage_is_full);
+                    mErrorUiMessage 
+                        = getResources().getString(R.string.storage_is_full);
                     break;
                 case RemainingTimeCalculator.FILE_SIZE_LIMIT:
-                    mErrorUiMessage = getResources().getString(R.string.max_length_reached);
+                    mErrorUiMessage 
+                        = getResources().getString(R.string.max_length_reached);
                     break;
                 default:
                     mErrorUiMessage = null;
                     break;
             }
-
+            
             mRecorder.stop();
             return;
         }
+            
+        Resources res = getResources();
+        String timeStr = "";
+        
+        if (t < 60)
+            timeStr = String.format(res.getString(R.string.sec_available), t);
+        else if (t < 540)
+            timeStr = String.format(res.getString(R.string.min_available), t/60 + 1);
+        
+        mStateMessage1.setText(timeStr);
     }
-
+    
     /**
      * Shows/hides the appropriate child views for the new state.
      */
-    private void updateUi(boolean skipRewindAnimation) {
+    private void updateUi() {
+        Resources res = getResources();
+        
         switch (mRecorder.state()) {
             case Recorder.IDLE_STATE:
-                mLastButtonId = 0;
-            case Recorder.PLAYING_PAUSED_STATE:
                 if (mRecorder.sampleLength() == 0) {
-                    mNewButton.setEnabled(true);
-                    mNewButton.setVisibility(View.VISIBLE);
-                    mRecordButton.setVisibility(View.VISIBLE);
-                    mStopButton.setVisibility(View.GONE);
-                    mPlayButton.setVisibility(View.GONE);
-                    mPauseButton.setVisibility(View.GONE);
-                    mDeleteButton.setEnabled(false);
+                    mRecordButton.setEnabled(true);
+                    mRecordButton.setFocusable(true);
+                    mPlayButton.setEnabled(false);
+                    mPlayButton.setFocusable(false);
+                    mStopButton.setEnabled(false);
+                    mStopButton.setFocusable(false);
                     mRecordButton.requestFocus();
-
+                    
+                    mStateMessage1.setVisibility(View.INVISIBLE);
+                    mStateLED.setVisibility(View.INVISIBLE);
+                    mStateMessage2.setVisibility(View.INVISIBLE);
+                    
+                    mExitButtons.setVisibility(View.INVISIBLE);
                     mVUMeter.setVisibility(View.VISIBLE);
+
+                    mStateProgressBar.setVisibility(View.INVISIBLE);
                     
-                    mSeekBarLayout.setVisibility(View.GONE);
+                    setTitle(res.getString(R.string.record_your_message));                    
                 } else {
-                    mNewButton.setEnabled(true);
-                    mNewButton.setVisibility(View.VISIBLE);
-                    mRecordButton.setVisibility(View.GONE);
-                    mStopButton.setVisibility(View.GONE);
-                    mPlayButton.setVisibility(View.VISIBLE);
-                    mPauseButton.setVisibility(View.GONE);
-                    mDeleteButton.setEnabled(true);
-                    mPauseButton.requestFocus();
+                    mRecordButton.setEnabled(true);
+                    mRecordButton.setFocusable(true);
+                    mPlayButton.setEnabled(true);
+                    mPlayButton.setFocusable(true);
+                    mStopButton.setEnabled(false);
+                    mStopButton.setFocusable(false);
+                                            
+                    mStateMessage1.setVisibility(View.INVISIBLE);
+                    mStateLED.setVisibility(View.INVISIBLE);                        
+                    mStateMessage2.setVisibility(View.INVISIBLE);
 
+                    mExitButtons.setVisibility(View.VISIBLE);
                     mVUMeter.setVisibility(View.INVISIBLE);
-                    
-                    mSeekBarLayout.setVisibility(View.VISIBLE);
-                    mStartTime.setText(String.format(mTimerFormat, 0, 0));
-                    mTotalTime.setText(String.format(mTimerFormat, mRecorder.sampleLength() / 60,
-                            mRecorder.sampleLength() % 60));
-                }
-//                mFileNameEditText.setEnabled(true);
-//                mFileNameEditText.clearFocus();
 
-                if (mRecorder.sampleLength() > 0) {
-                    if (mRecorder.state() == Recorder.PLAYING_PAUSED_STATE) {
-                        if (SoundRecorderPreferenceActivity.isEnabledSoundEffect(this)) {
-                            mSoundPool.play(mPauseSound, 1.0f, 1.0f, 0, 0, 1);
-                        }
-                    } else {
-                        mPlaySeekBar.setProgress(0);
+                    mStateProgressBar.setVisibility(View.INVISIBLE);
 
-                    }
+                    setTitle(res.getString(R.string.message_recorded));
                 }
                 
-                // we allow only one toast at one time
-                if (mSampleInterrupted && mErrorUiMessage == null) {
-                    Toast.makeText(this, R.string.recording_stopped, Toast.LENGTH_SHORT).show();
+                if (mSampleInterrupted) {
+                    mStateMessage2.setVisibility(View.VISIBLE);
+                    mStateMessage2.setText(res.getString(R.string.recording_stopped));
+                    mStateLED.setVisibility(View.INVISIBLE);
                 }
-
+                
                 if (mErrorUiMessage != null) {
-                    Toast.makeText(this, mErrorUiMessage, Toast.LENGTH_SHORT).show();
+                    mStateMessage1.setText(mErrorUiMessage);
+                    mStateMessage1.setVisibility(View.VISIBLE);
                 }
-
+                
                 break;
-            case Recorder.RECORDING_STATE:
-                mNewButton.setEnabled(false);
-                mNewButton.setVisibility(View.VISIBLE);
-                mRecordButton.setVisibility(View.GONE);
-                mStopButton.setVisibility(View.VISIBLE);
-                mPlayButton.setVisibility(View.GONE);
-                mPauseButton.setVisibility(View.GONE);
-                mDeleteButton.setEnabled(false);
-                mStopButton.requestFocus();
-
+            case Recorder.RECORDING_STATE: 
+                mRecordButton.setEnabled(false);
+                mRecordButton.setFocusable(false);
+                mPlayButton.setEnabled(false);
+                mPlayButton.setFocusable(false);
+                mStopButton.setEnabled(true);
+                mStopButton.setFocusable(true);
+                
+                mStateMessage1.setVisibility(View.VISIBLE);
+                mStateLED.setVisibility(View.VISIBLE);
+                mStateLED.setImageResource(R.drawable.recording_led);
+                mStateMessage2.setVisibility(View.VISIBLE);
+                mStateMessage2.setText(res.getString(R.string.recording));
+                
+                mExitButtons.setVisibility(View.INVISIBLE);
                 mVUMeter.setVisibility(View.VISIBLE);
-                
-                mSeekBarLayout.setVisibility(View.GONE);
 
-//                mFileNameEditText.setEnabled(false);
+                mStateProgressBar.setVisibility(View.INVISIBLE);
+                
+                setTitle(res.getString(R.string.record_your_message));
 
                 break;
 
-            case Recorder.PLAYING_STATE:
-                mNewButton.setEnabled(false);
-                mNewButton.setVisibility(View.VISIBLE);
-                mRecordButton.setVisibility(View.GONE);
-                mStopButton.setVisibility(View.GONE);
-                mPlayButton.setVisibility(View.GONE);
-                mPauseButton.setVisibility(View.VISIBLE);
-                mDeleteButton.setEnabled(false);
-                mPauseButton.requestFocus();
-
-                mVUMeter.setVisibility(View.INVISIBLE);
+            case Recorder.PLAYING_STATE: 
+                mRecordButton.setEnabled(true);
+                mRecordButton.setFocusable(true);
+                mPlayButton.setEnabled(false);
+                mPlayButton.setFocusable(false);
+                mStopButton.setEnabled(true);
+                mStopButton.setFocusable(true);
                 
-                mSeekBarLayout.setVisibility(View.VISIBLE);
+                mStateMessage1.setVisibility(View.INVISIBLE);
+                mStateLED.setVisibility(View.INVISIBLE);
+                mStateMessage2.setVisibility(View.INVISIBLE);
+                
+                mExitButtons.setVisibility(View.VISIBLE);
+                mVUMeter.setVisibility(View.INVISIBLE);
 
-//                mFileNameEditText.setEnabled(false);
+                mStateProgressBar.setVisibility(View.VISIBLE);
 
-                if (SoundRecorderPreferenceActivity.isEnabledSoundEffect(this)) {
-                    mSoundPool.play(mPlaySound, 1.0f, 1.0f, 0, 0, 1);
-                }
+                setTitle(res.getString(R.string.review_message));
+
                 break;
         }
-
-        updateTimerView();
-        updateSeekBar();
         
+        updateTimerView();   
         mVUMeter.invalidate();
     }
-
+    
     /*
      * Called when Recorder changed it's state.
      */
@@ -1063,123 +826,40 @@ public class SoundRecorder extends Activity implements Button.OnClickListener,
         if (state == Recorder.PLAYING_STATE || state == Recorder.RECORDING_STATE) {
             mSampleInterrupted = false;
             mErrorUiMessage = null;
+            mWakeLock.acquire(); // we don't want to go to sleep while recording or playing
+        } else {
+            if (mWakeLock.isHeld())
+                mWakeLock.release();
         }
-
-        updateUi(false);
+        
+        updateUi();
     }
-
+    
     /*
      * Called when MediaPlayer encounters an error.
      */
     public void onError(int error) {
         Resources res = getResources();
-
+        
         String message = null;
         switch (error) {
-            case Recorder.STORAGE_ACCESS_ERROR:
+            case Recorder.SDCARD_ACCESS_ERROR:
                 message = res.getString(R.string.error_sdcard_access);
                 break;
             case Recorder.IN_CALL_RECORD_ERROR:
-                // TODO: update error message to reflect that the recording
-                // could not be
-                // performed during a call.
+                // TODO: update error message to reflect that the recording could not be
+                //       performed during a call.
             case Recorder.INTERNAL_ERROR:
                 message = res.getString(R.string.error_app_internal);
                 break;
         }
         if (message != null) {
-            new AlertDialog.Builder(this).setTitle(R.string.app_name).setMessage(message)
-                    .setPositiveButton(R.string.button_ok, null).setCancelable(false).show();
-        }
-    }
-
-    @Override
-    public boolean onPrepareOptionsMenu(Menu menu) {
-        menu.clear();
-        if (mRecorder.state() == Recorder.RECORDING_STATE
-                || mRecorder.state() == Recorder.PLAYING_STATE) {
-            return false;
-        } else {
-            getMenuInflater().inflate(R.layout.view_list_menu, menu);
-            return true;
-        }
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        Intent intent;
-        switch (item.getItemId()) {
-            case R.id.menu_fm:
-                saveSample();
-//                intent = new Intent();
-//                intent.addCategory(Intent.CATEGORY_DEFAULT);
-//                intent.setData(Uri.parse("file://" + mRecorder.getRecordDir()));
-                intent = new Intent(this, DirSoundsListActivity.class);
-//                FileHelper fh = new FileHelper();
-//                intent.putStringArrayListExtra("Sounds_Path",(ArrayList<String>)fh.getSoundsPathList());
-                startActivity(intent);
-                break;
-            case R.id.menu_setting:
-                intent = new Intent(this, SoundRecorderPreferenceActivity.class);
-                startActivity(intent);
-                
-                break;
-            default:
-                break;
-        }
-        return true;
-    }
-
-    private SeekBar.OnSeekBarChangeListener mSeekBarChangeListener = new SeekBar.OnSeekBarChangeListener() {
-        private final int DELTA = SEEK_BAR_MAX / 20;
-
-        private int mProgress = 0;
-
-        private boolean mPlaying = false;
-
-        @Override
-        public void onStopTrackingTouch(SeekBar seekBar) {
-            mRecorder.startPlayback((float) seekBar.getProgress() / SEEK_BAR_MAX);
-        }
-
-        @Override
-        public void onStartTrackingTouch(SeekBar seekBar) {
-            mRecorder.pausePlayback();
-            mPlaying = false;
-        }
-
-        @Override
-        public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-            if (fromUser) {
-                if (!mPlaying) {
-                    mPlaying = true;
-                    mProgress = progress;
-                }
-
-                if (progress >= mProgress + DELTA) {
-                    mProgress = progress;
-                } else if (progress < mProgress - DELTA) {
-                    mProgress = progress;
-                }
-
-                setTimerView(((float) progress) / SEEK_BAR_MAX);
-                mLastButtonId = 0;
-            }
-        }
-    };
-
-    private class RecorderReceiver extends BroadcastReceiver {
-
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent.hasExtra(RecorderService.RECORDER_SERVICE_BROADCAST_STATE)) {
-                boolean isRecording = intent.getBooleanExtra(
-                        RecorderService.RECORDER_SERVICE_BROADCAST_STATE, false);
-                mRecorder.setState(isRecording ? Recorder.RECORDING_STATE : Recorder.IDLE_STATE);
-            } else if (intent.hasExtra(RecorderService.RECORDER_SERVICE_BROADCAST_ERROR)) {
-                int error = intent.getIntExtra(RecorderService.RECORDER_SERVICE_BROADCAST_ERROR, 0);
-                mRecorder.setError(error);
-            }
+            new AlertDialog.Builder(this)
+                .setTitle(R.string.app_name)
+                .setMessage(message)
+                .setPositiveButton(R.string.button_ok, null)
+                .setCancelable(false)
+                .show();
         }
     }
 }
