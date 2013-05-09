@@ -230,6 +230,8 @@ public class SoundRecorder extends Activity
     ImageButton mPlayButton;
     ImageButton mStopButton;
     
+    ImageButton mDirButton;
+    
     ImageView mStateLED;
     TextView mStateMessage1;
     TextView mStateMessage2;
@@ -329,6 +331,9 @@ public class SoundRecorder extends Activity
         mPlayButton = (ImageButton) findViewById(R.id.playButton);
         mStopButton = (ImageButton) findViewById(R.id.stopButton);
         
+        mDirButton = (ImageButton)findViewById(R.id.directionButton);
+        mDirButton.setOnClickListener(this);
+        
         mStateLED = (ImageView) findViewById(R.id.stateLED);
         mStateMessage1 = (TextView) findViewById(R.id.stateMessage1);
         mStateMessage2 = (TextView) findViewById(R.id.stateMessage2);
@@ -416,6 +421,10 @@ public class SoundRecorder extends Activity
             case R.id.discardButton:
                 mRecorder.delete();
                 finish();
+                break;
+            case R.id.directionButton:
+                Intent intent = new Intent(SoundRecorder.this,RecordsList.class);
+                startActivity(intent);
                 break;
         }
     }

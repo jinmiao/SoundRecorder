@@ -17,6 +17,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.android.droidrecorder">
 
+    <uses-sdk android:minSdkVersion="8" android:targetSdkVersion="15"/>
+    
     <original-package android:name="com.android.droidrecorder" />
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -40,5 +42,13 @@
                  <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+        
+        <activity android:name="RecordsList"
+			android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="unspecified"
+            android:clearTaskOnLaunch="true"
+            android:theme="@style/Theme.SoundRecorder"
+            />
+        
     </application>
 </manifest>
