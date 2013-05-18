@@ -16,7 +16,6 @@
 
 package com.android.droidrecorder;
 
-import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,11 +27,13 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.View;
+import android.view.View.OnClickListener;
 import android.view.Window;
 import android.widget.AdapterView;
-import android.widget.ListView;
 import android.widget.AdapterView.OnItemClickListener;
 import android.widget.AdapterView.OnItemLongClickListener;
+import android.widget.ImageButton;
+import android.widget.ListView;
 
 public class RecordsList extends Activity {
 	
@@ -55,6 +56,8 @@ public class RecordsList extends Activity {
 	ListView listView;
 	RecordAdapter adapter;
 	
+	ImageButton btn_previous;
+	
     /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -68,15 +71,24 @@ public class RecordsList extends Activity {
 		listView.setOnItemClickListener(new ListItemClickListener());
 		
 		listView.setDividerHeight(1);//set the height of the divider line 
-
+		
+		btn_previous = (ImageButton)findViewById(R.id.header_back_btn);
+		btn_previous.setOnClickListener(new OnClickListener() {
+			
+			@Override
+			public void onClick(View v) {
+				// TODO Auto-generated method stub
+				RecordsList.this.finish();
+			}
+		});
     }
 
     private void searchWithPath(String path) {
 		/**
 		 * Load audio files from the specified folder
 		 */
-		String[] projection = new String[] { MediaStore.Audio.Media._ID,
-				MediaStore.Audio.Media.TITLE, MediaStore.Audio.Media.DATA,
+		String[] projection = new String[] { MediaStore.Audio.Media._ID,MediaStore.Audio.Media.ALBUM,
+				MediaStore.Audio.Media.TITLE,MediaStore.Audio.Media.ARTIST, MediaStore.Audio.Media.DATA,
 				MediaStore.Audio.Media.DURATION, MediaStore.Audio.Media.SIZE };
 		
 		Cursor cursor = this.getContentResolver().query(
@@ -98,17 +110,23 @@ public class RecordsList extends Activity {
 			String id_t = cursor.getString(cursor.getColumnIndex(MediaStore.Audio.Media._ID));
 			records_id.add(id_t);
 
-//			String nameString = cursor.getString(cursor.getColumnIndex(MediaStore.Audio.Media.TITLE));
-//			records_name.add(nameString);
+			String nameString = cursor.getString(cursor.getColumnIndex(MediaStore.Audio.Media.TITLE));
+			records_name.add(nameString);
 
-			String root_path =  cursor.getString(cursor.getColumnIndex(MediaStore.Audio.Media.DATA));
-			records_root.add(root_path);
+			String root_url =  cursor.getString(cursor.getColumnIndex(MediaStore.Audio.Media.DATA));
+			records_root.add(root_url);
 			
-//			int dot = root_path.lastIndexOf("/");
+//			String artist = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST));
+			String album = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM));
+			int duration = cursor.getInt(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION));
+//			long size = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE));
+
+			records_info.add(album+"\n"+new SimpleDateFormat("mm:ss").format(duration));
+			//			int dot = root_path.lastIndexOf("/");
 //			records_name.add(root_path.substring(dot+1));
-			File f = new File(root_path);
-			records_info.add(((new SimpleDateFormat("yyyy-MM-dd HH:mm")).format(f.lastModified())));
-			records_name.add(f.getName());
+//			File f = new File(root_url);
+//			records_info.add(((new SimpleDateFormat("yyyy-MM-dd HH:mm")).format(f.lastModified())));
+//			records_name.add(f.getName());
 			
 			cursor.moveToNext();
             adapter = new RecordAdapter(RecordsList.this, records_name,records_info);

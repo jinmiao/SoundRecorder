@@ -2,18 +2,34 @@
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="fill_parent"
     android:layout_height="fill_parent"
+    android:background="#dadada"
     android:orientation="vertical" >
 	
     <RelativeLayout android:id="@+id/list_header"
         android:background="@drawable/list_header_shape"
-        android:layout_alignParentTop="true"	android:gravity="center_horizontal"
-        android:layout_width="fill_parent"	android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:layout_width="fill_parent"	android:layout_height="64dp"
         >
-        <TextView 
-            style="@style/list_header_text"
+        <ImageButton 
+            android:id="@+id/header_back_btn"
+            android:contentDescription="@string/app_name"
+            android:background="@drawable/list_header_return"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="RecordList"
+            android:layout_marginLeft="8dp"
+            android:layout_marginRight="8dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentLeft="true"
+            />
+        <TextView 
+            style="@style/list_header_text"
+            android:layout_toRightOf="@+id/header_back_btn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_centerVertical="true"
+        	android:layout_marginLeft="8dp"
+            android:layout_marginRight="8dp"
+            android:text="@string/header_text"
             />
     </RelativeLayout>
 	
@@ -25,5 +41,7 @@
         android:layout_height="fill_parent"
         android:layout_below="@+id/list_header"
         android:cacheColorHint="#00000000"
+        android:divider="#cacaca"
+        android:dividerHeight="2dp"
         />
 </RelativeLayout>
